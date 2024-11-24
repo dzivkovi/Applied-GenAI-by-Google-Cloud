@@ -1,0 +1,17 @@
+# Main Google Cloud libraries
+google-cloud-aiplatform>=1.38.0
+google-cloud-documentai>=2.20.0
+google-cloud-storage>=2.13.0
+
+# Document processing
+PyPDF2>=3.0.0
+Pillow>=10.1.0  # PIL for image processing
+
+# Data manipulation & ML
+numpy>=1.24.0
+scann>=1.2.0  # For efficient vector search
+shapely>=2.0.0
+
+# Notebook environment
+jupyter>=1.0.0
+ipython>=8.0.0
