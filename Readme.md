@@ -11,34 +11,41 @@ A proof-of-concept Q&A system exploring how sports officials can learn and apply
 
 ### Setup
 
-1. **Clone the Repository**:
+1. **Install Git LFS and configure it**:
+
+    This step ensures proper handling of large rulebook PDFs during the clone process.
+
+    ```sh
+    git lfs install
+    ```
+
+2. **Clone the Repository**:
 
     ```sh
     git clone https://github.com/dzivkovi/sports-rules-companion.git
     cd sports-rules-companion
     ```
 
-2. **Install Dependencies**:
+3. **Install Dependencies**:
 
     ```sh
     pip install -r requirements.txt
     ```
 
-3. **Authenticate with Google Cloud**:
+4. **Authenticate with Google Cloud**:
 
     ```sh
     gcloud auth login
     gcloud config set project YOUR_PROJECT_ID
     ```
 
-4. **Configure Git LFS**:
+#### Note on Git LFS
 
-    ```sh
-    git lfs install
-    git lfs pull
-    ```
+If you **did not** have Git LFS installed before cloning the repository, the large files (like PDFs) will not have been pulled. In that case, you can run:
 
-    This step ensures proper handling of large rulebook PDFs.
+```sh
+git lfs pull
+```
 
 ### Running Notebooks
 
