@@ -16,17 +16,20 @@ Welcome to my playground for exploring Generative AI with Google Cloud! Here are
 ### Setup
 
 1. **Clone the Repository**:
+
     ```sh
     git clone https://github.com/dzivkovi/Applied-GenAI-by-Google-Cloud.git
     cd Applied-GenAI-by-Google-Cloud
     ```
 
 2. **Install Dependencies**:
+
     ```sh
     pip install -r requirements.txt
     ```
 
 3. **Authenticate with Google Cloud**:
+
     ```sh
     gcloud auth login
     gcloud config set project YOUR_PROJECT_ID
@@ -35,6 +38,7 @@ Welcome to my playground for exploring Generative AI with Google Cloud! Here are
 ### Running Notebooks
 
 1. **Jupyter Notebook**: Start Jupyter Notebook to explore the notebooks.
+
     ```sh
     jupyter notebook
     ```
@@ -46,17 +50,20 @@ Welcome to my playground for exploring Generative AI with Google Cloud! Here are
 This repository uses Git Large File Storage (LFS) to manage large files efficiently. If you are cloning this repository or working with large files, please follow these steps:
 
 1. **Install Git LFS**:
+
     ```sh
     git lfs install
     ```
 
 2. **Clone the Repository**:
+
     ```sh
     git clone https://github.com/dzivkovi/Applied-GenAI-by-Google-Cloud.git
     cd Applied-GenAI-by-Google-Cloud
     ```
 
 3. **Pull LFS Files**:
+
     ```sh
     git lfs pull
     ```
@@ -66,6 +73,7 @@ By following these steps, you ensure that large files are handled properly and w
 ## Example Workflows
 
 This repository covers Q&A systems for various sports rulebooks, including:
+
 - Baseball (MLB)
 - Golf (USGA)
 - Soccer (IFAB)
@@ -73,5 +81,6 @@ This repository covers Q&A systems for various sports rulebooks, including:
 - Basketball (NBA)
 - Football (NFL)
 - Hockey (NHL)
+- Skiing (FIS)
 
 For more detailed examples and workflows, refer to the [Readme-legacy.md](./Readme-legacy.md) file.
