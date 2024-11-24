@@ -1,4 +1,4 @@
-# Sports Official Copilot: AI-Powered Rules Assistant for Sports Officials
+# Sports Rules Companion: AI Assistant for Sports Officials
 
 A proof-of-concept Q&A system exploring how sports officials can learn and apply rulebook knowledge using AI. Built with Google Cloud's Vertex AI technology, it demonstrates natural language interaction with our comprehensive [Rulebooks](./Rulebooks/) collection - featuring official PDFs from MLB, NBA, NFL, NHL, Cricket, Golf, Soccer, and Skiing. Whether you're studying to become an official or exploring rule interpretations, this project shows how AI can help navigate complex sports regulations.
 
