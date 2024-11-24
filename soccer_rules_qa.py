@@ -18,6 +18,8 @@ from google.cloud import aiplatform
 from google.cloud import documentai
 from google.cloud import storage
 import vertexai
+from vertexai.language_models import TextGenerationModel, TextEmbeddingModel
+
 
 class DocumentQA:
     def __init__(self, 
@@ -39,17 +41,17 @@ class DocumentQA:
         self.source_url = source_url or "https://www.theifab.com/laws-of-the-game-documents/?language=all&year=2022%2F23"
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
-        
+
         # Initialize Google Cloud clients
         vertexai.init(project=project_id, location=region)
-        self.embedding_model = vertexai.preview.language_models.TextEmbeddingModel.from_pretrained("textembedding-gecko@001")
-        self.textgen_model = vertexai.preview.language_models.TextGenerationModel.from_pretrained("text-bison@001")
-        
+        self.embedding_model = TextEmbeddingModel.from_pretrained("textembedding-gecko@latest")
+        self.generation_model = TextGenerationModel.from_pretrained("text-bison@002")
+
         # Initialize document processing components
         self.documents = []
         self.page_images = []
         self.faiss_index = None
-        
+
         # Load or process documents
         if self._cache_exists():
             self._load_from_cache()
@@ -66,10 +68,10 @@ class DocumentQA:
         """Load processed documents from cache."""
         with open(self.cache_dir / "documents.json", "r") as f:
             self.documents = json.load(f)
-        
+
         embeddings = np.load(self.cache_dir / "embeddings.npy")
         self.faiss_index = self._build_faiss_index(embeddings)
-        
+
         import pickle
         with open(self.cache_dir / "images.pkl", "rb") as f:
             self.page_images = pickle.load(f)
@@ -78,52 +80,67 @@ class DocumentQA:
         """Save processed documents to cache."""
         with open(self.cache_dir / "documents.json", "w") as f:
             json.dump(self.documents, f)
-        
+
         embeddings = np.array([doc["embedding"] for doc in self.documents]).astype("float32")
         np.save(self.cache_dir / "embeddings.npy", embeddings)
-        
+
         import pickle
         with open(self.cache_dir / "images.pkl", "wb") as f:
             pickle.dump(self.page_images, f)
 
     def _process_document(self):
         """Process the source document and create embeddings."""
-        # Download PDF
-        response = requests.get(self.source_url).content
-        pdf = PyPDF2.PdfReader(io.BytesIO(response))
-        
-        # Process each page
-        for page_num, page in enumerate(pdf.pages, 1):
-            # Extract text and create image
-            text = page.extract_text()
-            
-            # Create embedding
-            if text:
-                embedding = self.embedding_model.get_embeddings([text])[0].values
-            else:
+        try:
+            # Download PDF
+            response = requests.get(self.source_url)
+            response.raise_for_status()
+            pdf = PyPDF2.PdfReader(io.BytesIO(response.content))
+    
+            self.documents = []
+            self.page_images = []
+    
+            # Process each page
+            for page_num, page in enumerate(pdf.pages, 1):
+                # Extract text and create image
+                text = page.extract_text()
+    
+                # Create embedding
                 embedding = []
-            
-            # Store document info
-            self.documents.append({
-                "page_content": text,
-                "metadata": {
-                    "page": page_num,
-                    "source_document": self.source_url,
-                    "filename": self.source_url.split("/")[-1],
-                    "vme_id": str(page_num - 1)
-                },
-                "embedding": embedding,
-                "extras": {
-                    "vertices": self._get_page_vertices(page)
-                }
-            })
-            
-            # Store page image
-            self.page_images.append(self._create_page_image(page))
-        
-        # Build FAISS index
-        embeddings = np.array([doc["embedding"] for doc in self.documents]).astype("float32")
-        self.faiss_index = self._build_faiss_index(embeddings)
+                if text:
+                    embedding = self.embedding_model.get_embeddings([text])[0].values
+    
+                # Store document info
+                self.documents.append({
+                    "page_content": text,
+                    "metadata": {
+                        "page": page_num,
+                        "source_document": self.source_url,
+                        "filename": self.source_url.split("/")[-1],
+                        "vme_id": str(page_num - 1)
+                    },
+                    "embedding": embedding,
+                    "extras": {
+                        "vertices": self._get_page_vertices(page)
+                    }
+                })
+    
+                # Store page image
+                self.page_images.append(self._create_page_image(page))
+    
+            # Build FAISS index from non-empty embeddings
+            valid_embeddings = [doc["embedding"] for doc in self.documents if len(doc["embedding"]) > 0]
+            if valid_embeddings:
+                embeddings = np.array(valid_embeddings).astype("float32")
+                self.faiss_index = self._build_faiss_index(embeddings)
+            else:
+                raise ValueError("No valid embeddings found in document")
+    
+        except requests.RequestException as e:
+            raise Exception(f"Failed to download PDF: {e}")
+        except PyPDF2.PdfReadError as e:
+            raise Exception(f"Failed to read PDF: {e}")
+        except Exception as e:
+            raise Exception(f"Error processing document: {str(e)}")
 
     def _build_faiss_index(self, embeddings: np.ndarray) -> faiss.Index:
         """Build a FAISS index from embeddings."""
@@ -167,11 +184,15 @@ class DocumentQA:
         query_vector = np.array([self.embedding_model.get_embeddings([question])[0].values]).astype("float32")
         faiss.normalize_L2(query_vector)
         distances, neighbors = self.faiss_index.search(query_vector, k=3)
-        
+
         # Prepare context
-        context = "\n".join([f"Context {i+1}:\n{self.documents[idx]['page_content']}" 
-                           for i, idx in enumerate(neighbors[0])])
-        
+        context = "\n".join(
+            [
+                f"Context {i+1}:\n{self.documents[idx]['page_content']}"
+                for i, idx in enumerate(neighbors[0])
+            ]
+        )
+
         # Generate answer
         prompt = f"""
         Give a detailed answer to the question using information from the provided contexts.
@@ -182,9 +203,9 @@ class DocumentQA:
         
         Answer and Explanation:
         """
-        
+
         response = self.textgen_model.predict(prompt, max_output_tokens=max_output_tokens)
-        
+
         return {
             "question": question,
             "answer": response.text,
@@ -220,6 +241,7 @@ def main():
         print("\nSources:")
         for ctx, score in zip(result["contexts"], result["scores"]):
             print(f"- Page {ctx['metadata']['page']}, relevance: {score:.2f}")
+
 
 if __name__ == "__main__":
     main()
