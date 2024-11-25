@@ -20,10 +20,7 @@ Examples:
 """
 
 import os
-import sys
 import logging
-from typing import Optional, Union, BinaryIO
-from pathlib import Path
 import tempfile
 import argparse
 import requests
@@ -33,23 +30,23 @@ import gcsfs
 import google.generativeai as genai
 from dotenv import load_dotenv
 
+# Suppress GRPC warnings
+os.environ["GRPC_PYTHON_LOG_LEVEL"] = "error"
+
 # Configure logging
 load_dotenv()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# Constants
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB limit for Gemini
+DEFAULT_MODEL = "gemini-1.5-flash"
+DEFAULT_PDF_URL = "https://digitalhub.fifa.com/m/5371a6dcc42fbb44/original/Law-Book-2023-24-English.pdf"
+
 # Configure the API key
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY environment variable must be set!")
-
-# Optional AWS credentials for S3 access
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-
-# Optional GCS credentials
-GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 
 # Configure Gemini
 genai.configure(api_key=GOOGLE_API_KEY)
@@ -71,41 +68,61 @@ Remember to:
 - Use bullet points for multiple rules or steps
 """
 
-
 class CloudStorageHandler:
     """Handles file access across different storage systems."""
+
+    @staticmethod
+    def check_file_size(content: bytes, file_path: str) -> None:
+        """Check if file size is within Gemini's limits."""
+        size = len(content)
+        if size > MAX_FILE_SIZE:
+            msg = (
+                "File %s size (%d MB) exceeds Gemini's limit (%d MB). "
+                "Please use a smaller file."
+            ) % (file_path, size / (1024 * 1024), MAX_FILE_SIZE / (1024 * 1024))
+            raise ValueError(msg)
 
     @staticmethod
     def read_file(file_path: str) -> bytes:
         """Read file from any supported storage system."""
         try:
+            content = None
+            
             # Handle HTTP(S) URLs directly with requests
             if file_path.startswith(("http://", "https://")):
                 response = requests.get(file_path, timeout=60)
                 response.raise_for_status()
-                return response.content
+                content = response.content
 
             # Handle local files with direct path
             elif os.path.isfile(file_path):
                 with open(file_path, "rb") as f:
-                    return f.read()
+                    content = f.read()
 
             # Handle cloud storage (S3, GCS) with fsspec
             else:
                 protocol = file_path.split("://")[0] if "://" in file_path else "file"
                 if protocol == "s3":
                     fs = s3fs.S3FileSystem(
-                        key=AWS_ACCESS_KEY_ID,
-                        secret=AWS_SECRET_ACCESS_KEY,
-                        region=AWS_REGION,
+                        key=os.getenv("AWS_ACCESS_KEY_ID"),
+                        secret=os.getenv("AWS_SECRET_ACCESS_KEY"),
+                        region=os.getenv("AWS_REGION", "us-east-1"),
                     )
                 elif protocol == "gs":
-                    fs = gcsfs.GCSFileSystem(token=GOOGLE_APPLICATION_CREDENTIALS)
+                    fs = gcsfs.GCSFileSystem(
+                        token=os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+                    )
                 else:
                     fs = fsspec.filesystem("file")
 
                 with fs.open(file_path, "rb") as f:
-                    return f.read()
+                    content = f.read()
+
+            if content:
+                CloudStorageHandler.check_file_size(content, file_path)
+                return content
+            else:
+                raise ValueError("No content read from file")
 
         except Exception as e:
             msg = "Error reading file from %s: %s" % (file_path, str(e))
