@@ -1,32 +1,57 @@
 #!/usr/bin/env python
 """
-Soccer Rules Q&A using Google's Gemini Pro 1.5.
-Leverages Gemini's large context window to process entire PDF documents without splitting.
+Soccer Rules Q&A using Google Gemini 1.5 with support for various storage backends.
 
-Example usage:
-    python soccer_rules_qa.py --input https://digitalhub.fifa.com/m/5371a6dcc42fbb44/original/Law-Book-2023-24-English.pdf
+Examples:
+    # Default FIFA rules
+    python soccer_rules_qa.py
+
+    # Local file
+    python soccer_rules_qa.py --input ./rules.pdf
+
+    # HTTP(S)
+    python soccer_rules_qa.py --input https://example.com/rules.pdf
+
+    # Amazon S3
+    python soccer_rules_qa.py --input s3://bucket/rules.pdf
+
+    # Google Cloud Storage
+    python soccer_rules_qa.py --input gs://bucket/rules.pdf
 """
 
 import os
 import sys
 import logging
-from typing import Optional
-import argparse
+from typing import Optional, Union, BinaryIO
+from pathlib import Path
 import tempfile
+import argparse
 import requests
 import fsspec
+import s3fs
+import gcsfs
 import google.generativeai as genai
 from dotenv import load_dotenv
 
 # Configure logging
 load_dotenv()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=LOG_LEVEL)
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Configure the API key
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY environment variable must be set!")
+
+# Optional AWS credentials for S3 access
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+# Optional GCS credentials
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+# Configure Gemini
 genai.configure(api_key=GOOGLE_API_KEY)
 
 # Constants
@@ -47,33 +72,70 @@ Remember to:
 """
 
 
+class CloudStorageHandler:
+    """Handles file access across different storage systems."""
+
+    @staticmethod
+    def read_file(file_path: str) -> bytes:
+        """Read file from any supported storage system."""
+        try:
+            # Handle HTTP(S) URLs directly with requests
+            if file_path.startswith(("http://", "https://")):
+                response = requests.get(file_path, timeout=60)
+                response.raise_for_status()
+                return response.content
+
+            # Handle local files with direct path
+            elif os.path.isfile(file_path):
+                with open(file_path, "rb") as f:
+                    return f.read()
+
+            # Handle cloud storage (S3, GCS) with fsspec
+            else:
+                protocol = file_path.split("://")[0] if "://" in file_path else "file"
+                if protocol == "s3":
+                    fs = s3fs.S3FileSystem(
+                        key=AWS_ACCESS_KEY_ID,
+                        secret=AWS_SECRET_ACCESS_KEY,
+                        region=AWS_REGION,
+                    )
+                elif protocol == "gs":
+                    fs = gcsfs.GCSFileSystem(token=GOOGLE_APPLICATION_CREDENTIALS)
+                else:
+                    fs = fsspec.filesystem("file")
+
+                with fs.open(file_path, "rb") as f:
+                    return f.read()
+
+        except Exception as e:
+            msg = "Error reading file from %s: %s" % (file_path, str(e))
+            raise Exception(msg)
+
+
 class SoccerRulesQA:
+    """Main QA system using Gemini Pro."""
+
     def __init__(self, model_name: str = DEFAULT_MODEL):
         """Initialize the QA system with specified Gemini model."""
         self.model = genai.GenerativeModel(model_name)
         self.document = None
-        logging.info(f"Initialized with model: {model_name}")
+        logging.info("Initialized with model: %s", model_name)
 
     def load_document(self, file_path: str) -> None:
-        """Load document from URL or local path."""
+        """Load document from any supported storage location."""
         try:
             # Read document content
-            if file_path.startswith(("http://", "https://")):
-                response = requests.get(file_path, timeout=60)
-                response.raise_for_status()
-                content = response.content
-            else:
-                with fsspec.open(file_path, "rb") as file:
-                    content = file.read()
+            content = CloudStorageHandler.read_file(file_path)
 
             # Save to temporary file for Gemini upload
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
                 temp_file.write(content)
                 self.document = genai.upload_file(temp_file.name)
-                logging.info(f"Document loaded successfully from {file_path}")
+                logging.info("Document loaded successfully from %s", file_path)
 
         except Exception as e:
-            raise Exception(f"Error loading document: {str(e)}")
+            msg = "Error loading document: %s" % str(e)
+            raise Exception(msg)
         finally:
             if "temp_file" in locals():
                 os.unlink(temp_file.name)
@@ -84,9 +146,8 @@ class SoccerRulesQA:
             return "Error: No document loaded. Please load a document first."
 
         try:
-            # Combine document, system prompt, and question
             response = self.model.generate_content(
-                [self.document, SYSTEM_PROMPT, f"Question: {question}\nAnswer:"],
+                [self.document, SYSTEM_PROMPT, "Question: %s\nAnswer:" % question],
                 generation_config=genai.GenerationConfig(
                     temperature=0.2,
                     top_p=0.8,
@@ -94,16 +155,19 @@ class SoccerRulesQA:
                     max_output_tokens=2048,
                 ),
             )
-
             return response.text
 
         except Exception as e:
-            return f"Error generating answer: {str(e)}"
+            return "Error generating answer: %s" % str(e)
 
 
 def main():
     """Main entry point for the soccer rules QA system."""
-    parser = argparse.ArgumentParser(description="Soccer Rules Q&A System using Gemini")
+    parser = argparse.ArgumentParser(
+        description="Soccer Rules Q&A System using Gemini",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
     parser.add_argument(
         "--input",
         default=DEFAULT_PDF_URL,
@@ -117,7 +181,7 @@ def main():
         qa = SoccerRulesQA(model_name=args.model)
 
         # Load document
-        print(f"Loading document from {args.input}...")
+        print("Loading document from %s..." % args.input)
         qa.load_document(args.input)
 
         # Interactive Q&A loop
@@ -125,15 +189,23 @@ def main():
         print("-" * 50)
 
         while True:
-            question = input("\nAsk a question: ").strip()
-            if question.lower() in ["quit", "exit", "q"]:
-                break
+            try:
+                question = input("\nAsk a question: ").strip()
+                if question.lower() in ["quit", "exit", "q"]:
+                    break
 
-            answer = qa.ask(question)
-            print(f"\nAnswer: {answer}")
+                answer = qa.ask(question)
+                print("\nAnswer: %s" % answer)
+
+            except KeyboardInterrupt:
+                print("\nExiting...")
+                break
+            except Exception as e:
+                logging.error("Error processing question: %s", str(e))
+                print("An error occurred. Please try again.")
 
     except Exception as e:
-        logging.error(f"An error occurred: {str(e)}")
+        logging.error("An error occurred: %s", str(e))
         return 1
 
     return 0
