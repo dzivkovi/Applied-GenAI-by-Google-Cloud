@@ -1,168 +1,143 @@
+#!/usr/bin/env python
+"""
+Soccer Rules Q&A using Google's Gemini Pro 1.5.
+Leverages Gemini's large context window to process entire PDF documents without splitting.
+
+Example usage:
+    python soccer_rules_qa.py --input https://digitalhub.fifa.com/m/5371a6dcc42fbb44/original/Law-Book-2023-24-English.pdf
+"""
+
+import os
+import sys
+import logging
+from typing import Optional
 import argparse
-import io
+import tempfile
 import requests
-from pathlib import Path
-from typing import Optional, List, Tuple, Dict, Any
+import fsspec
+import google.generativeai as genai
+from dotenv import load_dotenv
 
-import numpy as np
-import faiss
-import PyPDF2
-import PIL
-import PIL.ImageFont, PIL.Image, PIL.ImageDraw
-import shapely
+# Configure logging
+load_dotenv()
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL)
 
-from google.cloud import aiplatform
-from google.cloud import documentai
-from google.cloud import storage
-import vertexai
-from vertexai.language_models import TextGenerationModel, TextEmbeddingModel
+# Configure the API key
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+if not GOOGLE_API_KEY:
+    raise ValueError("GOOGLE_API_KEY environment variable must be set!")
+genai.configure(api_key=GOOGLE_API_KEY)
 
-class DocumentQA:
-    DEFAULT_RULES_URL = "https://digitalhub.fifa.com/m/5371a6dcc42fbb44/original/Law-Book-2023-24-English.pdf"
-    
-    def __init__(self, 
-                 project_id: str,
-                 region: str = "us-central1",
-                 source_url: Optional[str] = None,
-                 cache_dir: Optional[str] = "cache"):
-        """Initialize the Document QA system."""
-        self.project_id = project_id
-        self.region = region
-        self.source_url = source_url or self.DEFAULT_RULES_URL
-        self.cache_dir = Path(cache_dir)
-        
+# Constants
+DEFAULT_MODEL = "gemini-1.5-flash"
+DEFAULT_PDF_URL = "https://digitalhub.fifa.com/m/5371a6dcc42fbb44/original/Law-Book-2023-24-English.pdf"
+
+SYSTEM_PROMPT = """
+You are an expert on soccer/football rules and regulations. Your task is to:
+1. Provide accurate answers based on the official rules document provided
+2. Always cite the specific law or section number when providing answers
+3. Be concise but comprehensive
+4. If a question cannot be answered using the provided document, say so clearly
+
+Remember to:
+- Focus only on official rules, not interpretations or opinions
+- Quote relevant text when appropriate
+- Use bullet points for multiple rules or steps
+"""
+
+
+class SoccerRulesQA:
+    def __init__(self, model_name: str = DEFAULT_MODEL):
+        """Initialize the QA system with specified Gemini model."""
+        self.model = genai.GenerativeModel(model_name)
+        self.document = None
+        logging.info(f"Initialized with model: {model_name}")
+
+    def load_document(self, file_path: str) -> None:
+        """Load document from URL or local path."""
         try:
-            # Create cache directory
-            self.cache_dir.mkdir(exist_ok=True)
-            
-            # Initialize Vertex AI
-            vertexai.init(project=project_id, location=region)
-            
-            # Initialize models
-            self.embedding_model = TextEmbeddingModel.from_pretrained("textembedding-gecko@latest")
-            self.llm = TextGenerationModel.from_pretrained("text-bison@002")
-            
-            # Process document
-            self._process_document()
-            
-        except Exception as e:
-            raise Exception(f"Failed to initialize DocumentQA: {str(e)}")
-
-    def _process_document(self):
-        """Process the source document and create embeddings."""
-        try:
-            # Download PDF
-            response = requests.get(self.source_url)
-            response.raise_for_status()
-            pdf = PyPDF2.PdfReader(io.BytesIO(response.content))
-    
-            self.documents = []
-            self.page_images = []
-    
-            # Process each page
-            for page_num, page in enumerate(pdf.pages, 1):
-                text = page.extract_text()
-                embedding = []
-                if text:
-                    embedding = self.embedding_model.get_embeddings([text])[0].values
-    
-                self.documents.append({
-                    "page_content": text,
-                    "metadata": {
-                        "page": page_num,
-                        "source_document": self.source_url,
-                        "filename": self.source_url.split("/")[-1],
-                        "vme_id": str(page_num - 1)
-                    },
-                    "embedding": embedding,
-                    "extras": {
-                        "vertices": self._get_page_vertices(page)
-                    }
-                })
-    
-                self.page_images.append(self._create_page_image(page))
-    
-            # Build FAISS index
-            valid_embeddings = [doc["embedding"] for doc in self.documents if len(doc["embedding"]) > 0]
-            if valid_embeddings:
-                embeddings = np.array(valid_embeddings).astype("float32")
-                self.faiss_index = self._build_faiss_index(embeddings)
+            # Read document content
+            if file_path.startswith(("http://", "https://")):
+                response = requests.get(file_path, timeout=60)
+                response.raise_for_status()
+                content = response.content
             else:
-                raise ValueError("No valid embeddings found in document")
-    
+                with fsspec.open(file_path, "rb") as file:
+                    content = file.read()
+
+            # Save to temporary file for Gemini upload
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+                temp_file.write(content)
+                self.document = genai.upload_file(temp_file.name)
+                logging.info(f"Document loaded successfully from {file_path}")
+
         except Exception as e:
-            raise Exception(f"Error processing document: {str(e)}")
+            raise Exception(f"Error loading document: {str(e)}")
+        finally:
+            if "temp_file" in locals():
+                os.unlink(temp_file.name)
 
-    def _build_faiss_index(self, embeddings: np.ndarray) -> faiss.Index:
-        """Build a FAISS index from embeddings."""
-        dimension = embeddings.shape[1]
-        faiss.normalize_L2(embeddings)
-        index = faiss.IndexFlatIP(dimension)
-        index.add(embeddings)
-        return index
-        
-    def _get_page_vertices(self, page) -> List[Dict]:
-        """Extract page vertices."""
-        # Implementation depends on PDF structure
-        return []
-        
-    def _create_page_image(self, page) -> PIL.Image:
-        """Create image from PDF page."""
-        # Implementation depends on PDF structure
-        return PIL.Image.new('RGB', (100, 100))
+    def ask(self, question: str) -> str:
+        """Ask a question about the soccer rules."""
+        if not self.document:
+            return "Error: No document loaded. Please load a document first."
 
-    def ask(self, question: str, k: int = 3) -> str:
-        """Answer a question about the document."""
         try:
-            # Get question embedding
-            question_embedding = self.embedding_model.get_embeddings([question])[0].values
-            
-            # Search similar passages
-            D, I = self.faiss_index.search(
-                np.array([question_embedding]).astype("float32"), k
+            # Combine document, system prompt, and question
+            response = self.model.generate_content(
+                [self.document, SYSTEM_PROMPT, f"Question: {question}\nAnswer:"],
+                generation_config=genai.GenerationConfig(
+                    temperature=0.2,
+                    top_p=0.8,
+                    top_k=40,
+                    max_output_tokens=2048,
+                ),
             )
-            
-            # Build context
-            context = "\n".join([
-                f"Page {self.documents[i]['metadata']['page']}: {self.documents[i]['page_content']}"
-                for i in I[0]
-            ])
-            
-            # Generate answer
-            prompt = f"""Based on the following context from the soccer rules document, 
-            answer this question: {question}\n\nContext:\n{context}"""
-            
-            response = self.llm.predict(prompt, temperature=0.2)
+
             return response.text
-            
+
         except Exception as e:
-            return f"Error answering question: {str(e)}"
+            return f"Error generating answer: {str(e)}"
+
 
 def main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(description="Soccer Rules QA System")
-    parser.add_argument("--project-id", required=True, help="Google Cloud project ID")
-    parser.add_argument("--pdf-url", default=None, help="URL to PDF document")
+    """Main entry point for the soccer rules QA system."""
+    parser = argparse.ArgumentParser(description="Soccer Rules Q&A System using Gemini")
+    parser.add_argument(
+        "--input",
+        default=DEFAULT_PDF_URL,
+        help="Input PDF document path (local, S3, GCS, or HTTP(S))",
+    )
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="Gemini model name")
     args = parser.parse_args()
-    
+
     try:
-        qa = DocumentQA(
-            project_id=args.project_id,
-            source_url=args.pdf_url
-        )
-        
+        # Initialize QA system
+        qa = SoccerRulesQA(model_name=args.model)
+
+        # Load document
+        print(f"Loading document from {args.input}...")
+        qa.load_document(args.input)
+
+        # Interactive Q&A loop
+        print("\nSoccer Rules Q&A System (type 'quit' to exit)")
+        print("-" * 50)
+
         while True:
-            question = input("\nAsk a question (or 'quit' to exit): ")
-            if question.lower() == 'quit':
+            question = input("\nAsk a question: ").strip()
+            if question.lower() in ["quit", "exit", "q"]:
                 break
+
             answer = qa.ask(question)
             print(f"\nAnswer: {answer}")
-            
+
     except Exception as e:
-        print(f"Error: {str(e)}")
+        logging.error(f"An error occurred: {str(e)}")
         return 1
-    
+
     return 0
+
 
 if __name__ == "__main__":
     exit(main())
