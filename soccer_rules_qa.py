@@ -39,7 +39,6 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Constants
-MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB limit for Gemini
 DEFAULT_MODEL = "gemini-1.5-flash"
 DEFAULT_PDF_URL = "https://digitalhub.fifa.com/m/5371a6dcc42fbb44/original/Law-Book-2023-24-English.pdf"
 
@@ -68,26 +67,15 @@ Remember to:
 - Use bullet points for multiple rules or steps
 """
 
+
 class CloudStorageHandler:
     """Handles file access across different storage systems."""
-
-    @staticmethod
-    def check_file_size(content: bytes, file_path: str) -> None:
-        """Check if file size is within Gemini's limits."""
-        size = len(content)
-        if size > MAX_FILE_SIZE:
-            msg = (
-                "File %s size (%d MB) exceeds Gemini's limit (%d MB). "
-                "Please use a smaller file."
-            ) % (file_path, size / (1024 * 1024), MAX_FILE_SIZE / (1024 * 1024))
-            raise ValueError(msg)
-
     @staticmethod
     def read_file(file_path: str) -> bytes:
         """Read file from any supported storage system."""
         try:
             content = None
-            
+
             # Handle HTTP(S) URLs directly with requests
             if file_path.startswith(("http://", "https://")):
                 response = requests.get(file_path, timeout=60)
@@ -103,23 +91,28 @@ class CloudStorageHandler:
             else:
                 protocol = file_path.split("://")[0] if "://" in file_path else "file"
                 if protocol == "s3":
-                    fs = s3fs.S3FileSystem(
+                    # Fix S3 configuration
+                    s3 = s3fs.S3FileSystem(
+                        anon=False,  # Use credentials
                         key=os.getenv("AWS_ACCESS_KEY_ID"),
                         secret=os.getenv("AWS_SECRET_ACCESS_KEY"),
-                        region=os.getenv("AWS_REGION", "us-east-1"),
+                        client_kwargs={
+                            "region_name": os.getenv("AWS_REGION", "us-east-1")
+                        }
                     )
+                    with s3.open(file_path, "rb") as f:
+                        content = f.read()
                 elif protocol == "gs":
                     fs = gcsfs.GCSFileSystem(
                         token=os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
                     )
+                    with fs.open(file_path, "rb") as f:
+                        content = f.read()
                 else:
-                    fs = fsspec.filesystem("file")
-
-                with fs.open(file_path, "rb") as f:
-                    content = f.read()
+                    with fsspec.open(file_path, "rb") as f:
+                        content = f.read()
 
             if content:
-                CloudStorageHandler.check_file_size(content, file_path)
                 return content
             else:
                 raise ValueError("No content read from file")
@@ -193,6 +186,7 @@ def main():
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Gemini model name")
     args = parser.parse_args()
 
+    qa = None
     try:
         # Initialize QA system
         qa = SoccerRulesQA(model_name=args.model)
@@ -224,6 +218,13 @@ def main():
     except Exception as e:
         logging.error("An error occurred: %s", str(e))
         return 1
+    finally:
+        if qa and qa.model:
+            try:
+                # Attempt to close GRPC channel gracefully
+                qa.model._client.close()
+            except:  # noqa: E722
+                pass
 
     return 0
 
