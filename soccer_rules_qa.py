@@ -30,9 +30,6 @@ import gcsfs
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-# Suppress GRPC warnings
-os.environ["GRPC_PYTHON_LOG_LEVEL"] = "error"
-
 # Configure logging
 load_dotenv()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -166,7 +163,6 @@ class SoccerRulesQA:
                 ),
             )
             return response.text
-
         except Exception as e:
             return f"Error generating answer: {e}"
 
@@ -186,45 +182,34 @@ def main():
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Gemini model name")
     args = parser.parse_args()
 
-    qa = None
     try:
-        # Initialize QA system
         qa = SoccerRulesQA(model_name=args.model)
-
-        # Load document
         print(f"Loading document from {args.input}...")
         qa.load_document(args.input)
 
-        # Interactive Q&A loop
+        # Initial document validation and identification
+        test = qa.ask(
+            "Please identify what official rulebook or document this is and what sport it covers. Keep it brief."
+        )
+        if "400" in test:
+            print(f"\nError: {test}")  # Print full error message
+            return 1
+        print(f"\nDocument identified as: {test}")
+
         print("\nSoccer Rules Q&A System (type 'quit' to exit)")
         print("-" * 50)
 
         while True:
-            try:
-                question = input("\nAsk a question: ").strip()
-                if question.lower() in ["quit", "exit", "q"]:
-                    break
-
-                answer = qa.ask(question)
-                print(f"\nAnswer: {answer}")
-
-            except KeyboardInterrupt:
-                print("\nExiting...")
+            question = input("\nAsk a question: ").strip()
+            if question.lower() in ["quit", "exit", "q"]:
                 break
-            except Exception as e:
-                logging.error("Error processing question: %s", str(e))
-                print("An error occurred. Please try again.")
+            print(f"\nAnswer: {qa.ask(question)}")
 
+    except KeyboardInterrupt:
+        print("\nExiting...")
     except Exception as e:
-        logging.error("An error occurred: %s", str(e))
+        print(f"\nError: {str(e)}")  # Print full error message
         return 1
-    finally:
-        if qa and qa.model:
-            try:
-                # Attempt to close GRPC channel gracefully
-                qa.model._client.close()
-            except:  # noqa: E722
-                pass
 
     return 0
 
