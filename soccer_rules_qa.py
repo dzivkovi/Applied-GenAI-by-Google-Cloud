@@ -118,7 +118,7 @@ class CloudStorageHandler:
                 raise ValueError("No content read from file")
 
         except Exception as e:
-            msg = "Error reading file from %s: %s" % (file_path, str(e))
+            msg = f"Error reading file from {file_path}: {e}"
             raise Exception(msg)
 
 
@@ -144,7 +144,7 @@ class SoccerRulesQA:
                 logging.info("Document loaded successfully from %s", file_path)
 
         except Exception as e:
-            msg = "Error loading document: %s" % str(e)
+            msg = f"Error loading document: {e}"
             raise Exception(msg)
         finally:
             if "temp_file" in locals():
@@ -157,7 +157,7 @@ class SoccerRulesQA:
 
         try:
             response = self.model.generate_content(
-                [self.document, SYSTEM_PROMPT, "Question: %s\nAnswer:" % question],
+                [self.document, SYSTEM_PROMPT, f"Question: {question}\nAnswer:"],
                 generation_config=genai.GenerationConfig(
                     temperature=0.2,
                     top_p=0.8,
@@ -168,7 +168,7 @@ class SoccerRulesQA:
             return response.text
 
         except Exception as e:
-            return "Error generating answer: %s" % str(e)
+            return f"Error generating answer: {e}"
 
 
 def main():
@@ -192,7 +192,7 @@ def main():
         qa = SoccerRulesQA(model_name=args.model)
 
         # Load document
-        print("Loading document from %s..." % args.input)
+        print(f"Loading document from {args.input}...")
         qa.load_document(args.input)
 
         # Interactive Q&A loop
@@ -206,7 +206,7 @@ def main():
                     break
 
                 answer = qa.ask(question)
-                print("\nAnswer: %s" % answer)
+                print(f"\nAnswer: {answer}")
 
             except KeyboardInterrupt:
                 print("\nExiting...")
